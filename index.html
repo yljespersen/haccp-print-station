@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HACCP Compliance Log</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Oswald:wght@600&display=swap">
+<style>
+/* Print station wrapper: one thin bar that owns the Bluetooth link to the label printer, and the HACCP app underneath in a frame.
+   Built by build_station.py from station.template.html + label_config.json. Do not edit index.html by hand. */
+:root{--black:#000;--red:#ED1C24;--panel:#141414;--line:#333;--muted:#b5b5b5;--ok:#3ddc84;--warn:#ffb020;--bad:#ff4d4d}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--black);color:#fff;font:14px Montserrat,system-ui,sans-serif}
+body{display:flex;flex-direction:column;height:100dvh}
+#bar{display:flex;align-items:center;gap:10px;padding:6px 12px;background:var(--panel);border-bottom:2px solid var(--red);min-height:46px;flex:0 0 auto;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
+#dot{width:12px;height:12px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+#dot.ready{background:var(--ok)}#dot.work{background:var(--warn)}#dot.bad{background:var(--bad)}
+#state{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto}
+#state small{font-weight:400;color:var(--muted);margin-left:8px}
+button{font:600 13px Oswald,Montserrat,sans-serif;letter-spacing:.05em;text-transform:uppercase;border-radius:6px;padding:9px 14px;cursor:pointer;border:1px solid var(--line);background:#1d1d1d;color:#fff;flex:0 0 auto}
+button.pri{background:var(--red);border-color:var(--red)}
+button:disabled{opacity:.5}
+button:focus-visible,input:focus-visible{outline:2px solid #fff;outline-offset:2px}
+#app{flex:1 1 auto;width:100%;border:0;background:#000}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:10;display:flex;align-items:flex-start;justify-content:center;padding:60px 14px 14px;overflow:auto}
+.sheet .box{background:var(--panel);border:1px solid var(--line);border-top:4px solid var(--red);padding:16px;width:100%;max-width:460px}
+.sheet h2{font:600 18px Oswald,sans-serif;text-transform:uppercase;letter-spacing:.04em;margin:0 0 6px}
+.sheet p{color:var(--muted);font-size:13px;line-height:1.45;margin:6px 0}
+.sheet label{display:block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:12px 0 4px}
+.sheet input[type=text],.sheet input[type=password]{width:100%;font:inherit;font-size:16px;color:#fff;background:#000;border:1px solid var(--line);border-radius:6px;padding:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.opt{display:flex;gap:10px;align-items:center;margin-top:10px;font-size:14px}
+.opt input{width:20px;height:20px}
+.msg{margin-top:10px;font-size:13px;color:var(--warn)}
+canvas#pv{background:#fff;max-width:100%;border:1px solid var(--line);margin-top:10px;image-rendering:pixelated}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div id="bar">
+  <span id="dot"></span>
+  <div id="state">Label printer<small id="sub"></small></div>
+  <button class="pri" id="connect" type="button" hidden>Connect printer</button>
+  <button id="menuBtn" type="button">Printer</button>
+</div>
+<iframe id="app" title="HACCP Compliance Log" allow="clipboard-write; fullscreen"></iframe>
+
+<div class="sheet" id="setup" hidden>
+  <div class="box">
+    <h2>Make this tablet the label print station</h2>
+    <p>This tablet will hold the Bluetooth link to the shop label printer and print every label sent from the app, from any device. An Owner or PIC sets it up once with their employee code.</p>
+    <label for="stName">Name for this tablet</label><input id="stName" type="text" maxlength="40" value="Sealer tablet">
+    <label for="stCode">Owner or PIC employee code</label><input id="stCode" type="password" inputmode="numeric" autocomplete="off" maxlength="8">
+    <div class="msg" id="setupMsg" hidden></div>
+    <div class="row"><button class="pri" id="stGo" type="button">Set up</button><button id="stSkip" type="button">Not now</button></div>
+  </div>
+</div>
+
+<div class="sheet" id="menu" hidden>
+  <div class="box">
+    <h2>Label printer</h2>
+    <p id="menuState"></p>
+    <div class="row">
+      <button class="pri" id="mConnect" type="button">Connect printer</button>
+      <button id="mTest" type="button">Print test label</button>
+      <button id="mRelease" type="button">Release printer</button>
+    </div>
+    <label class="opt"><input type="checkbox" id="oAwake"> Keep the screen awake while connected</label>
+    <label class="opt"><input type="checkbox" id="oFast"> Fast send (turn off if labels print as garbage)</label>
+    <p>Labels print only while this page is open on this tablet with the printer connected. Release the printer before using the Runner app on a phone.</p>
+    <canvas id="pv" hidden></canvas>
+    <div class="msg" id="menuMsg" hidden></div>
+    <div class="row"><button id="mClose" type="button">Close</button><button id="mForget" type="button">Remove this station</button></div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+const CFG={"appUrl": "https://script.google.com/macros/s/AKfycbxyG1bQqDDAOR3XCx1LJVhFX5VOfoGQu5elLFdFFcirr87uS_7zMVQDpZDNFIk7j1QL/exec", "api": "https://script.google.com/macros/s/AKfycbxyG1bQqDDAOR3XCx1LJVhFX5VOfoGQu5elLFdFFcirr87uS_7zMVQDpZDNFIk7j1QL/exec", "blePrefix": "Y812BT", "service": "49535343-fe7d-4ae5-8fa9-9fafd205e455", "writeChar": "49535343-8841-43f4-a8d4-ecbe34729bb3", "dpi": 203, "wmm": 60, "hmm": 49, "gap": 3, "density": 8, "direction": 1, "shopName": "CARNIVORES MEAT MARKET", "shopAddr": "240 Marshall Dr, Suite 4, St. Robert, MO 65584", "pollMs": 5000, "fastChunk": 180, "tailLen": 0};
+const $=s=>document.querySelector(s);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const store={get(k){try{return localStorage.getItem(k);}catch(e){return null;}},set(k,v){try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v);}catch(e){}}};
+const MOCK=/[?&]mock=1/.test(location.search);
+let station=store.get("haccpStation"),device=null,chr=null,want=false,busy=false,waiting=0,lastPrinted="",pendingFlush=0,wake=null,linking=false;
+
+$("#app").src=CFG.appUrl;
+$("#oAwake").checked=store.get("haccpAwake")!=="0";$("#oFast").checked=store.get("haccpFast")==="1";
+$("#oAwake").onchange=e=>{store.set("haccpAwake",e.target.checked?"1":"0");keepAwake();};
+$("#oFast").onchange=e=>store.set("haccpFast",e.target.checked?"1":"0");
+
+// ---------- state line ----------
+function paint(){const dot=$("#dot"),st=$("#state"),sub=$("#sub");let cls="",text="Label printer",s="";
+  const hasBt=!!navigator.bluetooth||MOCK;
+  if(!hasBt){cls="bad";text="No Bluetooth in this browser";s="open this page in Chrome on the Android tablet";}
+  else if(!station){text="Label printer not set up";s="tap Printer";}
+  else if(chr){cls=busy?"work":"ready";text=busy?"Printing…":"Label printer ready";s=(waiting?waiting+" waiting · ":"")+(lastPrinted?"last: "+lastPrinted:"");}
+  else if(want){cls="work";text="Reconnecting to the label printer…";s="is it on and in range?";}
+  else{cls="bad";text="Label printer not connected";s="labels will wait";}
+  dot.className=cls;st.firstChild.textContent=text;sub.textContent=s;
+  $("#connect").hidden=!(hasBt&&station&&!chr&&!want);
+  $("#menuState").textContent=text+(s?" ("+s+")":"")+(device&&device.name?" · "+device.name:"");
+  $("#mRelease").disabled=!chr&&!want;$("#mTest").disabled=!chr;$("#mConnect").hidden=!!chr;}
+function say(id,msg){const m=$(id);m.hidden=!msg;m.textContent=msg||"";}
+
+// ---------- server ----------
+async function api(body){const r=await fetch(CFG.api,{method:"POST",body:JSON.stringify(body),redirect:"follow"});if(!r.ok)throw new Error("server "+r.status);return r.json();}
+
+// ---------- station setup ----------
+$("#stGo").onclick=async()=>{say("#setupMsg","");const code=$("#stCode").value.trim();if(!/^\d{4,8}$/.test(code)){say("#setupMsg","Enter the 4 to 8 digit code.");return;}
+  $("#stGo").disabled=true;try{const r=await api({op:"register",code,name:$("#stName").value.trim()});$("#stCode").value="";
+    if(!r.ok){say("#setupMsg",r.error||"Could not set up.");return;}station=r.station;store.set("haccpStation",station);$("#setup").hidden=true;paint();openMenu();}
+  catch(e){say("#setupMsg","Could not reach the log. Check the connection.");}finally{$("#stGo").disabled=false;}};
+$("#stSkip").onclick=()=>{$("#setup").hidden=true;};
+$("#mForget").onclick=()=>{if(!confirm("Stop using this tablet as the print station?"))return;release();station=null;store.set("haccpStation",null);$("#menu").hidden=true;paint();};
+
+// ---------- Bluetooth ----------
+function mockDevice(){const sent=[];window.__sent=sent;const d={name:"MOCK Y812BT",gatt:{connected:false,async connect(){d.gatt.connected=true;return{async getPrimaryService(){return{async getCharacteristic(){return{properties:{writeWithoutResponse:true},async writeValueWithoutResponse(v){sent.push(Array.from(v));}};}};}};},disconnect(){d.gatt.connected=false;}},addEventListener(){}};return d;}
+async function choose(){say("#menuMsg","");
+  try{device=MOCK?mockDevice():await navigator.bluetooth.requestDevice({filters:[{namePrefix:CFG.blePrefix}],optionalServices:[CFG.service]});}
+  catch(e){if(e&&e.name!=="NotFoundError")say("#menuMsg","Could not open the printer list: "+(e.message||e));return;}
+  device.addEventListener("gattserverdisconnected",dropped);want=true;await link();}
+async function link(){if(linking||!device)return;linking=true;paint();
+  try{const server=await Promise.race([device.gatt.connect(),sleep(20000).then(()=>{throw new Error("timed out");})]);
+    const svc=await server.getPrimaryService(CFG.service);chr=await svc.getCharacteristic(CFG.writeChar);say("#menuMsg","");keepAwake();}
+  catch(e){chr=null;if(want)setTimeout(link,5000);say("#menuMsg","Printer not reachable yet: "+(e.message||e));}
+  finally{linking=false;paint();}}
+function dropped(){chr=null;paint();if(want)setTimeout(link,3000);}
+function release(){want=false;chr=null;try{device&&device.gatt.connected&&device.gatt.disconnect();}catch(e){}keepAwake();paint();}
+async function keepAwake(){try{if(chr&&$("#oAwake").checked&&navigator.wakeLock&&!document.hidden){if(!wake)wake=await navigator.wakeLock.request("screen");wake.addEventListener&&wake.addEventListener("release",()=>{wake=null;});}else if(wake){await wake.release();wake=null;}}catch(e){wake=null;}}
+document.addEventListener("visibilitychange",()=>{if(!document.hidden){keepAwake();if(want&&!chr)link();tick();}});
+
+async function write(part){for(let a=0;;a++){try{if(chr.properties.writeWithoutResponse&&chr.writeValueWithoutResponse)await chr.writeValueWithoutResponse(part);else if(chr.writeValueWithResponse)await chr.writeValueWithResponse(part);else await chr.writeValue(part);return;}
+  catch(e){if(a>=5||!chr||!device.gatt.connected)throw e;await sleep(40*(a+1));}}}
+async function send(bytes,bitmapStart){const n=$("#oFast").checked?CFG.fastChunk:20;
+  if(pendingFlush>0){const pad=new Uint8Array(pendingFlush+8).fill(0xFF);pad.set([13,10,67,76,83,13,10],pendingFlush);  // finish a half-sent picture as white, then CLS
+    for(let i=0;i<pad.length;i+=n)await write(pad.subarray(i,i+n));pendingFlush=0;}
+  let i=0;try{for(;i<bytes.length;i+=n)await write(bytes.subarray(i,Math.min(i+n,bytes.length)));}
+  catch(e){const end=bytes.length-CFG.tailLen;if(i>bitmapStart&&i<end)pendingFlush=end-i;throw e;}
+  await sleep(1200);}
+
+// ---------- label drawing (same layout as label_printer.py on the Mac) ----------
+const PX=mm=>Math.round(mm/25.4*CFG.dpi);
+const fmt=iso=>{if(!iso)return"";const p=String(iso).slice(0,10).split("-");return p[1]+"/"+p[2]+"/"+p[0].slice(2);};
+function render(b){const W=PX(CFG.wmm),H=PX(CFG.hmm);const c=document.createElement("canvas");c.width=W;c.height=H;const g=c.getContext("2d",{willReadFrequently:true});
+  g.fillStyle="#fff";g.fillRect(0,0,W,H);g.fillStyle="#000";g.textBaseline="top";
+  const m=PX(2.5),x=m,width=W-2*m;let y=m;const custom=b.program==="Custom",fz=b.storage==="FZ";
+  const big=Math.max(18,Math.floor(H/11)),mid=Math.max(14,Math.floor(H/16)),small=Math.max(11,Math.floor(H/24)),tiny=Math.max(10,Math.floor(H/30));
+  const F=(kind,px)=>(kind==="bold"?"700 ":"400 ")+px+"px Montserrat, Arial, sans-serif";
+  function wrap(text){const out=[];let line="";String(text).split(/\s+/).filter(Boolean).forEach(w=>{const t=(line+" "+w).trim();if(g.measureText(t).width<=width)line=t;else{if(line)out.push(line);line=w;}});if(line)out.push(line);return out;}
+  function line(text,kind,px,gap){g.font=F(kind,px);wrap(text).forEach(ln=>{g.fillText(ln,x,y);y+=px+(gap==null?2:gap);});}
+  if(custom){const boxH=big+PX(3),lw=Math.max(3,PX(0.6));g.lineWidth=lw;g.strokeRect(x+lw/2,y+lw/2,W-2*m-lw,boxH-lw);
+    g.font=F("bold",big);const t="NOT FOR SALE";g.fillText(t,(W-g.measureText(t).width)/2,y+PX(1.5));y+=boxH+PX(2);
+    line(b.product||"","bold",big);line((b.owner||"")+" · "+(b.species||""),"bold",mid);line("PACKED "+fmt(b.date)+" · KEEP FROZEN","bold",mid);
+    if(b.telecheck)line("TELECHECK "+b.telecheck,"bold",mid);
+    line("Custom exempt. Owner's use only. Not for retail sale. Not inspected. Processed and packaged by "+CFG.shopName+", St. Robert, MO.","regular",tiny,1);}
+  else{line(CFG.shopName,"bold",small,0);line(CFG.shopAddr,"regular",tiny);line(b.product||"","bold",big);
+    line("VACUUM PACKED "+fmt(b.date),"bold",mid,0);line(fz?"KEEP FROZEN":"DISCARD BY "+fmt(b.discardDate),"bold",mid);
+    line((fz?"KEEP FROZEN. Thaw under refrigeration before use.":"KEEP REFRIGERATED AT 41°F OR BELOW. DISCARD IF NOT USED WITHIN 14 DAYS OF PACKAGING, or freeze before the discard date.")+" Safe handling: keep raw meat separate from other foods; wash hands and surfaces after contact; cook thoroughly; refrigerate leftovers promptly.","regular",tiny,1);}
+  g.font="700 "+mid+"px ui-monospace, Menlo, 'Roboto Mono', monospace";g.fillText("LOT "+(b.lot||""),x,H-m-mid);
+  g.font=F("regular",tiny);const tag=(custom?"custom":(b.category||""))+" · "+(b.initials||"");g.fillText(tag,W-m-g.measureText(tag).width,H-m-tiny);
+  return c;}
+function tspl(c,copies){const W=c.width,H=c.height,wb=Math.ceil(W/8);const px=c.getContext("2d").getImageData(0,0,W,H).data;
+  const bits=new Uint8Array(wb*H).fill(0xFF);   // 1 = white, 0 = black, MSB first
+  for(let yy=0;yy<H;yy++)for(let xx=0;xx<W;xx++){const k=(yy*W+xx)*4;if(px[k]*0.299+px[k+1]*0.587+px[k+2]*0.114<150)bits[yy*wb+(xx>>3)]&=~(0x80>>(xx&7));}
+  const enc=s=>new TextEncoder().encode(s);
+  const head=enc("SIZE "+CFG.wmm+" mm,"+CFG.hmm+" mm\r\nGAP "+CFG.gap+" mm,0 mm\r\nDIRECTION "+CFG.direction+",0\r\nDENSITY "+CFG.density+"\r\nCLS\r\nBITMAP 0,0,"+wb+","+H+",0,");
+  const tail=enc("\r\nPRINT 1,"+Math.max(1,copies|0)+"\r\n");CFG.tailLen=tail.length;
+  const out=new Uint8Array(head.length+bits.length+tail.length);out.set(head,0);out.set(bits,head.length);out.set(tail,head.length+bits.length);return{bytes:out,bitmapStart:head.length};}
+const fontsReady=(document.fonts?Promise.all([document.fonts.load("700 30px Montserrat"),document.fonts.load("400 13px Montserrat")]).catch(()=>{}):Promise.resolve());
+const SAMPLE={program:"Retail",date:new Date().toISOString().slice(0,10),product:"TEST LABEL",category:"Beef",storage:"Refrig",discardDate:new Date(Date.now()+14*864e5).toISOString().slice(0,10),initials:"",lot:"TEST"};
+window.__render=b=>render(b||SAMPLE);window.__tspl=(b,n)=>tspl(render(b||SAMPLE),n||1);
+
+// ---------- the queue ----------
+async function printJob(job){let t;try{await fontsReady;t=tspl(render(job.batch),job.copies);}
+  catch(e){await api({op:"fail",station,id:job.id,error:"could not draw the label: "+(e.message||e),retry:false}).catch(()=>{});return;}
+  try{await send(t.bytes,t.bitmapStart);}
+  catch(e){await api({op:"fail",station,id:job.id,error:"printer dropped the connection",retry:true}).catch(()=>{});if(device&&!device.gatt.connected)dropped();return;}
+  lastPrinted=job.copies+" × "+(job.batch.product||"label");
+  for(let a=0;a<6;a++){try{const r=await api({op:"done",station,id:job.id});if(r.ok)return;}catch(e){}await sleep(2500);}}
+async function tick(){if(busy||!station||!chr||!device||!device.gatt.connected)return;busy=true;let again=false;
+  try{const r=await api({op:"next",station});
+    if(!r.ok){if(r.error==="STATION_UNKNOWN"){station=null;store.set("haccpStation",null);release();}return;}
+    waiting=r.waiting||0;if(r.job){paint();await printJob(r.job);again=true;}}
+  catch(e){}finally{busy=false;paint();if(again)setTimeout(tick,300);}}
+setInterval(tick,CFG.pollMs);
+
+// ---------- buttons ----------
+function openMenu(){say("#menuMsg","");$("#pv").hidden=true;$("#menu").hidden=false;paint();}
+$("#menuBtn").onclick=()=>{if(!station&&(navigator.bluetooth||MOCK)){$("#setup").hidden=false;$("#stCode").focus();}else openMenu();};
+$("#mClose").onclick=()=>{$("#menu").hidden=true;};
+$("#connect").onclick=choose;$("#mConnect").onclick=choose;$("#mRelease").onclick=release;
+$("#mTest").onclick=async()=>{if(!chr||busy)return;busy=true;paint();try{await fontsReady;const c=render(SAMPLE);const pv=$("#pv");pv.width=c.width;pv.height=c.height;pv.getContext("2d").drawImage(c,0,0);pv.hidden=false;const t=tspl(c,1);await send(t.bytes,t.bitmapStart);say("#menuMsg","Test label sent.");}
+  catch(e){say("#menuMsg","Test failed: "+(e.message||e));if(device&&!device.gatt.connected)dropped();}finally{busy=false;paint();}};
+
+// a printer this browser already knows (newer Chrome): try it without a tap; otherwise the Connect button does it
+(async()=>{paint();if(!station||!navigator.bluetooth||!navigator.bluetooth.getDevices)return;
+  try{const known=(await navigator.bluetooth.getDevices()).find(d=>(d.name||"").indexOf(CFG.blePrefix)===0);if(!known)return;device=known;device.addEventListener("gattserverdisconnected",dropped);
+    linking=true;try{const server=await Promise.race([device.gatt.connect(),sleep(8000).then(()=>{throw new Error("timeout");})]);const svc=await server.getPrimaryService(CFG.service);chr=await svc.getCharacteristic(CFG.writeChar);want=true;keepAwake();}catch(e){chr=null;}finally{linking=false;paint();}}catch(e){}})();
+})();
+</script>
+</body>
+</html>
